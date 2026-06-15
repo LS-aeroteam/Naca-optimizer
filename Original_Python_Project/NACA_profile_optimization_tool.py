@@ -13,11 +13,6 @@ import shutil
 def naca4(m_param, p_param, t_param, c=1.0, n=100):
     """
     Genera le coordinate di un profilo alare NACA a 4 cifre da parametri.
-    :param m_param: Curvatura massima (es. 0.02 per il 2%)
-    :param p_param: Posizione della curvatura massima (es. 0.4 per il 40%)
-    :param t_param: Spessore massimo (es. 0.12 per il 12%)
-    :param c: Corda del profilo
-    :param n: Numero di punti per semi-profilo
     """
     x = np.linspace(0, c, n)
     
@@ -60,7 +55,6 @@ def naca4(m_param, p_param, t_param, c=1.0, n=100):
     
     return X, Y, (xu, yu, xl, yl)
 
-
 def save_airfoil_to_file(X, Y, filename):
     """Salva le coordinate del profilo in un file .dat per XFOIL."""
     with open(filename, "w") as f:
@@ -79,39 +73,28 @@ def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
     xfoil_input_file = "xfoil_input.in"
     polar_file = "polar.dat"
 
-    # Crea il file di comandi per XFOIL
     with open(xfoil_input_file, "w") as f:
         f.write(f"LOAD {airfoil_file}\n")
-        f.write("PANE\n")  # Raffina la discretizzazione
+        f.write("PANE\n")  
         f.write("OPER\n")
         f.write(f"Visc {Re}\n")
         f.write(f"Mach {Mach}\n")
         f.write("PACC\n")
-        f.write(f"{polar_file}\n\n") # File di output per i dati polari
+        f.write(f"{polar_file}\n\n") 
         f.write(f"ALFA {alpha}\n")
-        f.write("\n")      # Esci dal menu OPER
+        f.write("\n")      
         f.write("QUIT\n")
 
-    # --- MODIFICA 1: Percorso assoluto per xfoil.exe ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
     xfoil_exe_path = os.path.join(script_dir, "xfoil.exe")
     
-    # Esegui XFOIL con i percorsi protetti da virgolette (per evitare problemi con gli spazi nei nomi delle cartelle)
     command = f'"{xfoil_exe_path}" < "{xfoil_input_file}"'
-    # ---------------------------------------------------
 
     try:
-        # Impostiamo un timeout per evitare che XFOIL si blocchi all'infinito se non converge
         subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=30)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print(f"!!! ERRORE: XFOIL non è riuscito a completare l'analisi per {airfoil_file}.")
-        if hasattr(e, 'stderr') and e.stderr:
-            print(f"    Output di errore da XFOIL:\n{e.stderr}")
-        else:
-            print(f"    Dettagli errore: {e}")
         return None, None
 
-    # Leggi i risultati dal file polare
     cl, cd = None, None
     try:
         with open(polar_file, "r") as f:
@@ -122,10 +105,8 @@ def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
                     cl = float(data[1])
                     cd = float(data[2])
     except (IOError, IndexError):
-        print(f"Avviso: Impossibile leggere il file di output {polar_file}.")
         pass
     
-    # Pulisci i file temporanei
     for f in [xfoil_input_file, polar_file, airfoil_file]:
         if os.path.exists(f):
             os.remove(f)
@@ -138,35 +119,59 @@ def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
 
 def objective_function(params, Re, alpha):
     """
-    Funzione obiettivo da minimizzare.
-    params: [m_param, p_param, t_param]
-    Restituisce -CL/CD (minimizzare -X è come massimizzare X).
+    Funzione obiettivo da minimizzare. -CL/CD
     """
     m, p, t = params
     
     # Vincoli impliciti: i parametri devono avere senso
     if not (0.0 <= m < 0.1 and 0.1 <= p < 0.8 and 0.05 <= t < 0.25):
-        return 1e6 # Penalità alta per parametri non validi
+        return 1e6
 
     airfoil_name = f"temp_naca.dat"
-    
-    # 1. Genera profilo e salvalo
     X, Y, _ = naca4(m, p, t)
     save_airfoil_to_file(X, Y, airfoil_name)
     
-    # 2. Esegui analisi
     cl, cd = run_xfoil_analysis(airfoil_name, alpha, Re)
     
-    # 3. Calcola valore obiettivo
     if cl is not None and cd is not None and cd > 0:
         efficiency = cl / cd
         print(f"Test NACA(m={m:.3f}, p={p:.3f}, t={t:.3f}) -> CL/CD = {efficiency:.2f}")
-        return -efficiency  # Minimizziamo il negativo dell'efficienza
+        return -efficiency
     else:
-        # Rendi esplicito il motivo della penalità
         print(f"--- Analisi fallita per NACA(m={m:.3f}, p={p:.3f}, t={t:.3f}). Assegno penalità.")
-        # Penalità se l'analisi fallisce o dà risultati assurdi
         return 1e6
+
+# ==============================================================================
+# FUNZIONI DI INPUT INTERATTIVO
+# ==============================================================================
+
+def get_float_input(prompt, default_val):
+    """Richiede un numero float, usa il default se l'input è vuoto."""
+    while True:
+        val = input(f"{prompt} [predefinito: {default_val}]: ").strip()
+        if not val:
+            return default_val
+        try:
+            return float(val)
+        except ValueError:
+            print("  Errore: Inserisci un numero valido.")
+
+def get_naca_input(prompt, default_val="0012"):
+    """Richiede 4 cifre NACA e restituisce [m, p, t] e la stringa inserita."""
+    while True:
+        val = input(f"{prompt} [predefinito: {default_val}]: ").strip()
+        if not val:
+            val = default_val
+        
+        if len(val) == 4 and val.isdigit():
+            m = int(val[0]) / 100.0
+            p = int(val[1]) / 10.0
+            # Se p è 0, lo impostiamo a un valore fittizio (es. 0.3) per evitare errori matematici
+            if p == 0: p = 0.3 
+            t = int(val[2:4]) / 100.0
+            return [m, p, t], val
+        else:
+            print("  Errore: Devi inserire esattamente 4 cifre (es. 0012, 2412).")
 
 # ==============================================================================
 # BLOCCO PRINCIPALE DI ESECUZIONE
@@ -174,7 +179,7 @@ def objective_function(params, Re, alpha):
 
 if __name__ == "__main__":
     
-    # --- MODIFICA 2: CONTROLLO PREREQUISITI AGGIORNATO ---
+    # CONTROLLO PREREQUISITI
     script_dir = os.path.dirname(os.path.abspath(__file__))
     xfoil_exe_path = os.path.join(script_dir, "xfoil.exe")
     
@@ -182,66 +187,67 @@ if __name__ == "__main__":
         print("="*60)
         print("!!! ERRORE CRITICO: Eseguibile 'xfoil.exe' non trovato.")
         print(f"Assicurati che XFOIL sia presente in questa cartella:\n{script_dir}")
-        print("Lo script non può funzionare senza XFOIL.")
         print("="*60)
         exit()
-    # -----------------------------------------------------
 
-    # --- CONDIZIONI DI VOLO E PARAMETRI DI OTTIMIZZAZIONE ---
-    TARGET_REYNOLDS = 1_000_000
-    TARGET_ALPHA = 1
+    # --- MENU INTERATTIVO ---
+    print("\n" + "="*50)
+    print(" BENVENUTO NELLO STRUMENTO DI OTTIMIZZAZIONE ALARE")
+    print("="*50)
+    
+    TARGET_REYNOLDS = get_float_input("1. Inserisci il numero di Reynolds", 1000000.0)
+    TARGET_ALPHA = get_float_input("2. Inserisci l'angolo d'attacco in gradi", 1.0)
+    initial_guess, str_naca = get_naca_input("3. Inserisci il profilo NACA iniziale (4 cifre)")
+    
+    # Limiti allargati per accogliere una gamma più ampia di profili
+    bounds = [(0.0, 0.09), (0.1, 0.8), (0.05, 0.25)]
 
-    # Profilo iniziale (NACA 0012 - simmetrico, una buona sfida per l'ottimizzatore)
-    # L'ottimizzatore dovrà "imparare" ad aggiungere curvatura (m > 0) per migliorare l'efficienza.
-    # m=0%, p=40% (irrilevante se m=0), t=12%
-    initial_guess = [0.0, 0.4, 0.12]
-
-    # Limiti per i parametri [m, p, t] durante l'ottimizzazione
-    # m: 0% -> 6%
-    # p: 30% -> 50%
-    # t: 8% -> 18%
-    bounds = [(0.0, 0.06), (0.3, 0.5), (0.08, 0.18)]
-
-    print("--- OTTIMIZZAZIONE PROFILO ALARE ---")
+    print("\n" + "-" * 35)
+    print("--- INIZIO OTTIMIZZAZIONE ---")
     print(f"Condizioni: Re = {TARGET_REYNOLDS}, Angolo d'attacco = {TARGET_ALPHA}°")
-    print(f"Profilo iniziale (m,p,t): {initial_guess} -> NACA 0012 Simmetrico")
+    print(f"Profilo iniziale: NACA {str_naca} (m={initial_guess[0]}, p={initial_guess[1]}, t={initial_guess[2]})")
     print("-" * 35)
 
     # Esegui l'ottimizzazione
-    # Aumentiamo maxiter per dare più tempo all'algoritmo e aggiungiamo una tolleranza sulla funzione obiettivo (ftol)
     result = minimize(
         objective_function,
         initial_guess,
         args=(TARGET_REYNOLDS, TARGET_ALPHA),
-        method='SLSQP',  # Un buon algoritmo per problemi con vincoli (bounds)
+        method='SLSQP',
         bounds=bounds,
-        options={'disp': True, 'maxiter': 150, 'ftol': 1e-8} # Aumentato maxiter e aggiunta tolleranza
+        options={'disp': True, 'maxiter': 150, 'ftol': 1e-8}
     )
 
-    print("-" * 35)
+    print("\n" + "-" * 35)
     print("--- RIEPILOGO OTTIMIZZAZIONE ---")
     print(f"Messaggio di terminazione: {result.message}")
-    print(f"Numero di iterazioni: {result.nit}")
-    print(f"Numero di valutazioni funzione: {result.nfev}")
     
     if result.success and -result.fun > 0:
         optimal_params = result.x
         max_efficiency = -result.fun
-        print(f"\nOttimizzazione completata con successo!")
-        print(f"Efficienza massima (CL/CD) trovata: {max_efficiency:.2f}")
+        
+        # Formattiamo i parametri ottimali per mostrarli come una sigla NACA approssimata
+        m_opt_str = str(int(round(optimal_params[0] * 100)))
+        p_opt_str = str(int(round(optimal_params[1] * 10)))
+        t_opt_str = f"{int(round(optimal_params[2] * 100)):02d}"
+        naca_opt_str = f"{m_opt_str}{p_opt_str}{t_opt_str}"
+
+        print(f"\n✅ Ottimizzazione completata con successo!")
+        print(f"Efficienza massima (CL/CD): {max_efficiency:.2f}")
         print(f"Parametri ottimali (m, p, t): {optimal_params[0]:.4f}, {optimal_params[1]:.4f}, {optimal_params[2]:.4f}")
+        print(f"Profilo ottimizzato risultante (Approssimato): NACA {naca_opt_str}")
         
         # Visualizza i profili
         _, _, coords_initial = naca4(*initial_guess)
         _, _, coords_optimal = naca4(*optimal_params)
 
         plt.figure(figsize=(12, 8))
-        plt.plot(coords_initial[0], coords_initial[1], 'b--', label='Iniziale (NACA 0012 Simmetrico)')
+        plt.plot(coords_initial[0], coords_initial[1], 'b--', label=f'Iniziale (NACA {str_naca})')
         plt.plot(coords_initial[2], coords_initial[3], 'b--')
-        plt.plot(coords_optimal[0], coords_optimal[1], 'r-', label=f'Ottimale (CL/CD={max_efficiency:.2f})')
+        plt.plot(coords_optimal[0], coords_optimal[1], 'r-', label=f'Ottimale (NACA ~{naca_opt_str} | CL/CD={max_efficiency:.2f})')
         plt.plot(coords_optimal[2], coords_optimal[3], 'r-')
         
-        plt.title('Confronto tra Profilo Iniziale e Ottimale')
+        plt.title(f"Confronto tra Profilo Iniziale e Ottimale (Re={TARGET_REYNOLDS}, Alpha={TARGET_ALPHA}°)")
         plt.xlabel('x/c')
         plt.ylabel('y/c')
         plt.axis('equal')
@@ -250,7 +256,6 @@ if __name__ == "__main__":
         plt.show()
         
     else:
-        print("\nL'ottimizzazione non è riuscita a trovare una soluzione migliorativa o è fallita.")
+        print("\n❌ L'ottimizzazione non è riuscita a trovare una soluzione migliorativa o è fallita.")
         print(f"Causa: {result.message}")
         print(f"Ultimi parametri tentati: {result.x}")
-        print(f"Valore funzione obiettivo finale: {result.fun}")
