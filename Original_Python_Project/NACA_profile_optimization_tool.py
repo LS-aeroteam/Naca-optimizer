@@ -58,7 +58,7 @@ def save_airfoil_to_file(X, Y, filename):
 # CFD ANALYSIS FUNCTION (XFOIL WRAPPER)
 # ==============================================================================
 
-def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
+def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0, ncrit=9.0):
     xfoil_input_file = "xfoil_input.in"
     polar_file = "polar.dat"
 
@@ -71,6 +71,11 @@ def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
         f.write(f"LOAD {airfoil_file}\n")
         f.write("PANE\n")  
         f.write("OPER\n")
+        
+        # Set Ncrit parameter
+        f.write("VPAR\n")
+        f.write(f"N {ncrit}\n")
+        f.write("\n")
         
         # TRICK 1: Inviscid warm-up (stabilizes the boundary layer)
         f.write("ALFA 0\n") 
@@ -143,7 +148,7 @@ def run_xfoil_analysis(airfoil_file, alpha, Re, Mach=0.0):
 def calculate_reynolds(speed, chord, kinematic_viscosity):
     return (speed * chord) / kinematic_viscosity
 
-def objective_function(params, Re, alpha, target_cl, max_cd):
+def objective_function(params, Re, alpha, target_cl, max_cd, mach, ncrit):
     objective_function.eval_count += 1
     eval_count = objective_function.eval_count
     m, p, t = params
@@ -157,7 +162,7 @@ def objective_function(params, Re, alpha, target_cl, max_cd):
     X, Y, _ = naca4(m, p, t)
     save_airfoil_to_file(X, Y, airfoil_name)
     
-    cl, cd, achieved_alpha = run_xfoil_analysis(airfoil_name, alpha, Re)
+    cl, cd, achieved_alpha = run_xfoil_analysis(airfoil_name, alpha, Re, mach, ncrit)
     
     if cl is not None and cd is not None and cd > 0:
         # We use squared error instead of abs() to make the function "smooth" (differentiable) for SLSQP
@@ -188,9 +193,12 @@ def objective_function(params, Re, alpha, target_cl, max_cd):
 # INTERACTIVE INPUT FUNCTIONS
 # ==============================================================================
 
-def get_float_input(prompt):
+def get_float_input(prompt, default=None):
     while True:
-        val = input(f"{prompt}: ").strip()
+        prompt_str = f"{prompt} [default: {default}]: " if default is not None else f"{prompt}: "
+        val = input(prompt_str).strip()
+        if not val and default is not None:
+            return default
         try:
             return float(val)
         except ValueError:
@@ -198,14 +206,14 @@ def get_float_input(prompt):
 
 def get_fluid_selection():
     fluids = {
-        '1': {'name': 'Air (Standard SL)', 'viscosity': 1.46e-5},
-        '2': {'name': 'Water (20 degrees)', 'viscosity': 1.00e-6}
+        '1': {'name': 'Air (Standard SL)', 'viscosity': 1.46e-5, 'speed_of_sound': 340.3},
+        '2': {'name': 'Water (20 degrees)', 'viscosity': 1.00e-6, 'speed_of_sound': 1482.0}
     }
     
     while True:
         print("\nSelect the operating fluid:")
-        print("1. Air (Kinematic viscosity: 1.46e-5 m^2/s)")
-        print("2. Water (Kinematic viscosity: 1.00e-6 m^2/s)")
+        print("1. Air (Kinematic viscosity: 1.46e-5 m^2/s, Speed of sound: 340.3 m/s)")
+        print("2. Water (Kinematic viscosity: 1.00e-6 m^2/s, Speed of sound: 1482.0 m/s)")
         choice = input("Choice (1 or 2): ").strip()
         
         if choice in fluids:
@@ -232,13 +240,22 @@ if __name__ == "__main__":
     
     # Acquisition of operating parameters for Reynolds calculation
     fluid = get_fluid_selection()
-    speed = get_float_input("Enter the design speed (m/s)")
+    
+    while True:
+        speed = get_float_input("Enter the design speed (m/s)")
+        TARGET_MACH = speed / fluid['speed_of_sound']
+        if TARGET_MACH < 0.4:
+            break
+        print(f"\n[!] WARNING: Calculated Mach number ({TARGET_MACH:.3f}) exceeds XFOIL validity limit (Mach < 0.4).")
+        print("Please enter a lower speed for accurate results.\n")
+        
     chord = get_float_input("Enter the airfoil chord length (m)")
     
     TARGET_REYNOLDS = calculate_reynolds(speed, chord, fluid['viscosity'])
     
     # Acquisition of optimization parameters
     TARGET_ALPHA = get_float_input("\nEnter the angle of attack (degrees)")
+    TARGET_NCRIT = get_float_input("Enter the Ncrit boundary layer parameter", default=9.0)
     TARGET_CL = get_float_input("Enter the target Lift Coefficient (Cl)")
     MAX_CD = get_float_input("Enter the maximum tolerated Drag Coefficient (Cd)")
     
@@ -247,8 +264,8 @@ if __name__ == "__main__":
     bounds = [(0.0, 0.20), (0.1, 0.8), (0.05, 0.35)]
 
     print("\n----------------------------------------------------------------------")
-    print(f"Fluid: {fluid['name']} | Speed: {speed} m/s | Chord: {chord} m")
-    print(f"Calculated Reynolds Number: {TARGET_REYNOLDS:.1f}")
+    print(f"Fluid: {fluid['name']} | Speed: {speed} m/s | Mach: {TARGET_MACH:.3f} | Chord: {chord} m")
+    print(f"Calculated Reynolds Number: {TARGET_REYNOLDS:.1f} | Ncrit: {TARGET_NCRIT}")
     print(f"Objective: Cl = {TARGET_CL} | Constraint: Cd <= {MAX_CD} at {TARGET_ALPHA} degrees")
     print("Initial airfoil: NACA 1412 (Quasi-Symmetric)")
     print("----------------------------------------------------------------------")
@@ -263,7 +280,7 @@ if __name__ == "__main__":
     result = minimize(
         objective_function,
         initial_guess,
-        args=(TARGET_REYNOLDS, TARGET_ALPHA, TARGET_CL, MAX_CD),
+        args=(TARGET_REYNOLDS, TARGET_ALPHA, TARGET_CL, MAX_CD, TARGET_MACH, TARGET_NCRIT),
         method='SLSQP',
         bounds=bounds,
         options={
@@ -285,7 +302,7 @@ if __name__ == "__main__":
         airfoil_name = "final_naca.dat"
         X, Y, coords_optimal = naca4(optimal_params[0], optimal_params[1], optimal_params[2])
         save_airfoil_to_file(X, Y, airfoil_name)
-        final_cl, final_cd, final_alpha = run_xfoil_analysis(airfoil_name, TARGET_ALPHA, TARGET_REYNOLDS)
+        final_cl, final_cd, final_alpha = run_xfoil_analysis(airfoil_name, TARGET_ALPHA, TARGET_REYNOLDS, TARGET_MACH, TARGET_NCRIT)
         if os.path.exists(airfoil_name): os.remove(airfoil_name)
         
         m_opt_str = str(int(round(optimal_params[0] * 100)))
@@ -315,7 +332,7 @@ if __name__ == "__main__":
         print(f"Status: Completed (Iterations: {result.nit}, Evaluations: {result.nfev})")
         print(f"Final error score: {result.fun:.6f}")
         
-        print("\nACHIEVED PERFORMANCES:")
+        print("\nACHIEVED PERFORMANCES (2D Section):")
         if final_cl is not None and final_cd is not None:
             if abs(final_alpha - TARGET_ALPHA) > 0.1:
                 print(f"Cl: {final_cl:.4f} (Obtained at stall at {final_alpha}° instead of {TARGET_ALPHA}°)")
@@ -326,6 +343,8 @@ if __name__ == "__main__":
                 print(f"Cd: {final_cd:.5f} (Limit: {MAX_CD})")
                 if final_cd > MAX_CD:
                     print("Note: the final Cd exceeds the imposed limit for the requested Cl.")
+            print("\n  * Note: Cl and Cd are 2D aerodynamic coefficients (infinite span).")
+            print("  * For a real 3D wing, expect higher total drag due to induced drag effects.")
         else:
             print("Cl: Data not available (Separated or non-converging flow)")
             print("Cd: Data not available (Separated or non-converging flow)")
