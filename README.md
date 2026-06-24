@@ -19,11 +19,11 @@ To avoid overlap and create a more powerful and versatile aerodynamic tool, we d
 Make sure you have **Python 3.8+** installed on your system (the tool is tested in a Windows environment).
 
 The required libraries are:
-```bash
-pip install numpy scipy matplotlib
-Crucial note on XFOIL: The project requires the XFOIL executable to work. Ensure that the xfoil.exe file is present in the same folder as the main script, otherwise the optimization module will not be able to launch the simulations.
+* **pip install numpy scipy matplotlib**
 
-🚀 Usage
+* **Crucial note on XFOIL:** The project requires the XFOIL executable to work. Ensure that the xfoil.exe file is present in the same folder as the main script, otherwise the optimization module will not be able to launch the simulations.
+
+## 🚀 Usage
 Run the main script from the terminal:
 
 Bash
